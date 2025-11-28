@@ -204,10 +204,7 @@ class eaios:
                         module_path = f"{base_package}.{module_parts}"
                         logger.debug(f"Importing module: {module_path}")
 
-                        try:
-                            importlib.import_module(module_path)
-                        except Exception as e:
-                            logger.error(f"Failed to import {module_path}: {e}")
+                        importlib.import_module(module_path)
 
     @staticmethod
     def caller(func):
@@ -266,7 +263,7 @@ def package_init(config_path: str):
             continue
         for entry in entrys:
             entry_name, entry_content = get_entry_name(entry)
-            
+
             entry_dir = os.path.join(BASE_PATH, base, entry_name)
             logger.debug(f"Entry directory: {entry_dir}")
             if not os.path.exists(entry_dir):
