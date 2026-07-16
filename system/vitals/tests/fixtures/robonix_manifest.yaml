@@ -8,7 +8,7 @@ name: vitals-health-test
 
 system:
   atlas:
-    listen: 127.0.0.1:50251
+    listen: 127.0.0.1:50051
 
 # ── Add your health primitive here ──────────────────────────────
 primitive:

@@ -2,8 +2,7 @@ uint32 NORMAL=0
 uint32 FAULT=1
 uint32 ESTOP=2
 
-string body_type             # root child id/name, e.g. "computer_jetson" | "arm_right"
-string model                 # "jetson_agx_orin" | "piper" | "mock_bms" | ...
-uint32 state                 # NORMAL / FAULT / ESTOP
-string message               # human-readable status summary (can be empty)
-BodyComponent[] components   # component-tree entries below this root child
+string key                   # root child path tail; root path tail when there are no direct children
+string model                 # root/root-child ComponentStatus.model, "unknown" when empty
+uint32 status                # global ESTOP/FAULT plus subtree error-fault/communication aggregate
+BodyComponent[] components   # ComponentStatus descendants selected by root id path prefix

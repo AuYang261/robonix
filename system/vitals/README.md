@@ -29,6 +29,15 @@ The `health_piper` primitive implements `robonix/primitive/health/stream` and
 wraps `piper_sdk`. It is **not** part of the Robonix source tree — create it in your
 deployment's `primitives/` directory following the [vendor onboarding guide](https://robonix.syswonder.org/integration-guide/vendor-onboarding.html).
 
+> **TODO — primitive bring-up failure semantics:** Soma currently exits when any
+> primitive fails bring-up. The target behavior is for a primitive failure not to
+> block Soma registration or service startup. Hardware unavailability (for example,
+> an unavailable CAN port) must be distinguished from process/bootstrap failure: a
+> health primitive should remain registered, report the unavailable condition through
+> its health stream, and support recovery instead of using lifecycle `CMD_INIT` failure
+> as the health state. For a generic `CMD_INIT` error, whether to retain an `ERROR`
+> provider or terminate it remains an open decision.
+
 ### Mock SOMA path (no SOMA needed)
 
 The `--mock-soma` flag starts an embedded gRPC server inside the Vitals process that
@@ -37,6 +46,19 @@ consumes it through the same `soma_ingest.rs` pipeline as production.
 
 Optionally, `--mock-soma-arm piper` spawns `scripts/piper_bridge.py` as a subprocess
 (stdin/stdout JSON) to merge real joint data into synthetic snapshots.
+
+## Port convention
+
+| Role | Port |
+|------|------|
+| Atlas | `50051` |
+| SOMA / mock SOMA | `50091` |
+| Vitals | `50092` |
+
+Mock SOMA replaces real SOMA, so they share the same port.
+
+> **Note:** SOMA and Vitals both default to `50091`.  When running Vitals alongside
+> SOMA (or mock SOMA), always pass `--listen 127.0.0.1:50092`.
 
 ## Running
 
@@ -51,8 +73,8 @@ robonix-atlas --listen 127.0.0.1:50051 --capabilities capabilities
 
 # Terminal 2: SOMA (spawns health_piper primitive, starts health collection)
 robonix-soma --atlas 127.0.0.1:50051 \
-  --robot-yaml <deploy>/soma.yaml \
-  --listen 127.0.0.1:50091
+  --listen 127.0.0.1:50091 \
+  --robot-yaml <deploy>/soma.yaml
 
 # Terminal 3: Vitals (auto-discovers SOMA health stream via Atlas)
 robonix-vitals --atlas 127.0.0.1:50051 \
@@ -79,37 +101,43 @@ grpcurl -plaintext -d '{}' 127.0.0.1:50092 \
 ### With mock SOMA (development, no SOMA binary needed)
 
 ```bash
-# Terminal 1: Atlas
-cargo run --release -p robonix-atlas -- --log info
+# Terminal 1: Atlas (required — mock SOMA registers with it)
+robonix-atlas --listen 127.0.0.1:50051 --log info
 
 # Terminal 2: mock Soma (scenarios: normal / ramp / fault / toggle / mixed)
-cargo run --release -p robonix-vitals -- --log info \
+robonix-vitals --atlas 127.0.0.1:50051 \
+  --log info \
   --mock-soma \
+  --mock-soma-listen 127.0.0.1:50091 \
   --mock-soma-scenario ramp \
   --mock-soma-interval-ms 1000
 
 # Terminal 3: Vitals consuming the Soma health stream
-cargo run --release -p robonix-vitals -- --log info
+robonix-vitals --atlas 127.0.0.1:50051 \
+  --log info \
+  --listen 127.0.0.1:50092
 ```
 
 ### Mock Soma with real hardware (bridge subprocess)
 
 ```bash
-# Piper arm via CAN bus
-robonix-vitals --log info \
+# Terminal 1: Atlas (required — mock SOMA registers with it)
+robonix-atlas --listen 127.0.0.1:50051 --log info
+
+# Terminal 2: mock Soma with Piper arm bridge
+robonix-vitals --atlas 127.0.0.1:50051 \
+  --log info \
   --mock-soma \
+  --mock-soma-listen 127.0.0.1:50091 \
   --mock-soma-arm piper \
   --mock-soma-piper-can can0 \
   --mock-soma-bridge-python ~/roboarm/.venv/bin/python3 \
   --mock-soma-interval-ms 1000
 
-# Koch arm via Dynamixel serial
-robonix-vitals --log info \
-  --mock-soma \
-  --mock-soma-arm koch \
-  --mock-soma-koch-port /dev/ttyUSB0 \
-  --mock-soma-bridge-python ~/roboarm/.venv/bin/python3 \
-  --mock-soma-interval-ms 1000
+# Terminal 3: Vitals consumer
+robonix-vitals --atlas 127.0.0.1:50051 \
+  --log info \
+  --listen 127.0.0.1:50092
 ```
 
 ## CLI flags
@@ -196,8 +224,8 @@ cargo run --release -p robonix-vitals -- \
 # Terminal 3: SOMA (spawns health_piper, starts health streaming)
 cargo run --release -p robonix-soma -- \
   --atlas 127.0.0.1:50051 \
-  --robot-yaml system/vitals/tests/fixtures/soma.yaml \
-  --listen 127.0.0.1:50091
+  --listen 127.0.0.1:50091 \
+  --robot-yaml system/vitals/tests/fixtures/soma.yaml
 ```
 
 **Step 4: Verify**
@@ -207,22 +235,26 @@ cargo run --release -p robonix-soma -- \
 grpcurl -plaintext -d '{}' 127.0.0.1:50091 \
   robonix.contracts.RobonixSystemSomaGetHealth/GetHealth
 
-# Vitals normalized snapshot — should contain Piper arm body health
+# Vitals normalized snapshot — should contain Piper arm topology and health signals
 grpcurl -plaintext -d '{}' 127.0.0.1:50092 \
   robonix.contracts.RobonixSystemVitalsGet/GetVitals
 ```
 
-Expected: `GetVitals` returns a `VitalsSnapshot` with `bodies[0]` containing
-6 Piper arm joints with real motor temperatures read from CAN0.
+Expected: `GetVitals` returns a `VitalsSnapshot` with an arm `BodyHealth` whose
+`components` contain 6 topology-only Piper joints. Motor temperatures matching
+threshold rules, active faults, and communication failures are projected when
+applicable; every actuator's torque enabled/disabled state is always projected.
+These values appear in `health_signals` (`healthSignals` in grpcurl JSON) with
+`key`, `status`, `detail`, `observedValue`, and `referenceValue` fields.
 
 ### gRPC verification (mock SOMA)
 
 ```bash
-# Vitals side
-grpcurl -plaintext -d '{}' 127.0.0.1:50091 \
+# Vitals side (port 50092)
+grpcurl -plaintext -d '{}' 127.0.0.1:50092 \
   robonix.contracts.RobonixSystemVitalsGet/GetVitals
 
-# Mock Soma side
-grpcurl -plaintext -d '{}' 127.0.0.1:50092 \
+# Mock Soma side (port 50091 — same as real SOMA)
+grpcurl -plaintext -d '{}' 127.0.0.1:50091 \
   robonix.contracts.RobonixSystemSomaGetHealth/GetHealth
 ```

@@ -1,4 +1,4 @@
-float32 battery_percent      # battery percentage 0-100, -1 if no battery
-float32 voltage              # battery/system voltage (V), -1 if unknown
-bool charging                # charging status
-int64 remaining_s            # estimated remaining seconds, -1 if unknown
+float32 soc_percent          # first power source soc_percent, -1 if unavailable
+float32 voltage              # first power source voltage (V), -1 if unavailable
+bool charging                # first power source current > 0; false when nonpositive or unavailable
+int64 remaining_s            # first power source estimated remaining seconds, -1 if unavailable
