@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 
 const MODULE_HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const MODULE_HEALTH_RPC_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 struct ModuleHealthPollTarget {
@@ -180,9 +181,10 @@ async fn poll_target(
             .with_context(|| format!("connect module health target '{}'", target.label))?;
 
     let result = async {
-        let report = call_get_health(target.client_kind, channel)
-            .await
-            .with_context(|| format!("call module health target '{}'", target.label))?;
+        let report =
+            call_get_health_with_timeout(target.client_kind, channel, MODULE_HEALTH_RPC_TIMEOUT)
+                .await
+                .with_context(|| format!("call module health target '{}'", target.label))?;
         let module_key = report
             .module
             .as_ref()
@@ -260,11 +262,61 @@ async fn call_get_health(
     }
 }
 
+async fn call_get_health_with_timeout(
+    client_kind: ModuleHealthClientKind,
+    channel: Channel,
+    timeout: Duration,
+) -> Result<ModuleHealthReport> {
+    tokio::time::timeout(timeout, call_get_health(client_kind, channel))
+        .await
+        .with_context(|| {
+            format!(
+                "module health RPC timed out after {}ms",
+                timeout.as_millis()
+            )
+        })?
+}
+
 fn health_label(health: u32) -> &'static str {
     match health {
         HEALTH_OK => "OK",
         HEALTH_WARN => "WARN",
         HEALTH_ERROR => "ERROR",
         _ => "UNKNOWN",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+    use tonic::transport::Endpoint;
+
+    #[tokio::test]
+    async fn hanging_module_health_rpc_times_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let channel = Endpoint::from_shared(format!("http://{address}"))
+            .unwrap()
+            .connect_lazy();
+
+        let result = call_get_health_with_timeout(
+            ModuleHealthClientKind::Pilot,
+            channel,
+            Duration::from_millis(25),
+        )
+        .await;
+
+        server.abort();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("module health RPC timed out after 25ms")
+        );
     }
 }
