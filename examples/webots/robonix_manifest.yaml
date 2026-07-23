@@ -30,6 +30,10 @@ system:
       api_key: ${VLM_API_KEY}
       model: ${VLM_MODEL}
       api_format: openai
+  # health monitoring layer
+  vitals:
+    listen: 127.0.0.1:50093
+    log: info
   liaison:
     listen: 0.0.0.0:50081
     log: info

@@ -3,7 +3,7 @@
 // `robonix_manifest.yaml`. (`rbnx boot` is a back-compat alias.)
 //
 // Conventions:
-//   - `system:` Rust binaries (atlas / pilot / executor) are launched with
+//   - Built-in `system:` Rust binaries are launched with
 //     CLI arguments translated from the manifest block (`--listen`,
 //     `--log`, `--vlm-*`, …). No env-var translation, no YAML config files.
 //   - Package entries (`primitive` / `service`) are launched serially:
@@ -64,6 +64,14 @@ const DRIVER_REGISTER_TIMEOUT: Duration = Duration::from_secs(60);
 // exceed 90s on a cold self-hosted runner.
 const DEFAULT_DRIVER_INIT_TIMEOUT: Duration = Duration::from_secs(90);
 const DEPLOY_CONSUMER_ID: &str = "rbnx-cli/deploy";
+const BUILTIN_SYSTEM_BINARIES: &[(&str, &str)] = &[
+    ("atlas", "robonix-atlas"),
+    ("executor", "robonix-executor"),
+    ("soma", "robonix-soma"),
+    ("pilot", "robonix-pilot"),
+    ("vitals", "robonix-vitals"),
+    ("liaison", "robonix-liaison"),
+];
 
 fn driver_init_timeout() -> Duration {
     std::env::var("ROBONIX_DRIVER_INIT_TIMEOUT_S")
@@ -232,6 +240,52 @@ stop: "true"
             .map(|pair| pair[1].as_str());
 
         assert_eq!(manifest_arg, Some(selected.to_string_lossy().as_ref()));
+    }
+
+    /// Verifies that a `system.vitals` block receives both typed CLI flags and
+    /// the full manifest JSON used for fields such as `expected_modules`.
+    #[test]
+    fn vitals_manifest_is_translated_to_builtin_args() {
+        let cfg: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+listen: 127.0.0.1:50093
+id: webots-vitals
+thresholds_path: /tmp/vitals-thresholds.yaml
+soma_endpoint: 127.0.0.1:50091
+log: debug
+expected_modules:
+  - module_id: executor
+    policy: required
+"#,
+        )
+        .expect("parse vitals manifest block");
+
+        let args = system_cli_args("vitals", Some(&cfg), Some("0.0.0.0:50051"));
+        let value_for = |flag: &str| {
+            args.windows(2)
+                .find(|pair| pair[0] == flag)
+                .map(|pair| pair[1].as_str())
+        };
+
+        assert_eq!(value_for("--listen"), Some("127.0.0.1:50093"));
+        assert_eq!(value_for("--atlas"), Some("0.0.0.0:50051"));
+        assert_eq!(value_for("--id"), Some("webots-vitals"));
+        assert_eq!(
+            value_for("--thresholds-path"),
+            Some("/tmp/vitals-thresholds.yaml")
+        );
+        assert_eq!(value_for("--soma-endpoint"), Some("127.0.0.1:50091"));
+        assert_eq!(value_for("--log"), Some("debug"));
+        assert_eq!(
+            system_listen("vitals", Some(&cfg)),
+            Some("127.0.0.1:50093".to_string())
+        );
+
+        let config_json: serde_json::Value = serde_json::from_str(
+            value_for("--config-json").expect("vitals receives full config JSON"),
+        )
+        .expect("parse generated config JSON");
+        assert_eq!(config_json["expected_modules"][0]["module_id"], "executor");
     }
 }
 
@@ -1103,14 +1157,7 @@ pub async fn execute(
             } else {
                 Some(atlas_caps_roots.join(","))
             };
-            let bin_map: &[(&str, &str)] = &[
-                ("atlas", "robonix-atlas"),
-                ("executor", "robonix-executor"),
-                ("soma", "robonix-soma"),
-                ("pilot", "robonix-pilot"),
-                ("liaison", "robonix-liaison"),
-            ];
-            for (name, bin) in bin_map {
+            for (name, bin) in BUILTIN_SYSTEM_BINARIES {
                 if !deploy.system.contains_key(*name) {
                     continue;
                 }
@@ -1213,7 +1260,7 @@ pub async fn execute(
                     // soma just finished stage 1 (all primitives ACTIVE). The
                     // next thing the operator sees on this terminal is the
                     // remaining builtins (pilot, liaison — whichever come
-                    // after soma in `bin_map`) followed by the non-builtin
+                    // after soma in `BUILTIN_SYSTEM_BINARIES`) followed by the non-builtin
                     // `system:` entries loop below (memory / scene / speech
                     // / …). Both cohorts are *system services*, NOT
                     // primitives, but without a fresh section header they
@@ -1223,13 +1270,13 @@ pub async fn execute(
                     //
                     // Only emit the header if there's actually something
                     // downstream to label. Concretely: at least one builtin
-                    // ordered after soma in `bin_map` is declared in the
+                    // ordered after soma in `BUILTIN_SYSTEM_BINARIES` is declared in the
                     // manifest, OR the manifest has any non-builtin
                     // `system:` key that will run in the loop after this
                     // for-loop finishes. Otherwise (e.g. an atlas-executor-
                     // soma-only deploy) skip the header — dangling section
                     // titles with nothing under them are worse than none.
-                    let builtin_after_soma = bin_map
+                    let builtin_after_soma = BUILTIN_SYSTEM_BINARIES
                         .iter()
                         .skip_while(|(n, _)| *n != "soma")
                         .skip(1) // drop soma itself
@@ -1237,7 +1284,7 @@ pub async fn execute(
                     let has_non_builtin_system = deploy
                         .system
                         .keys()
-                        .any(|k| !bin_map.iter().any(|(n, _)| n == k));
+                        .any(|k| !BUILTIN_SYSTEM_BINARIES.iter().any(|(n, _)| n == k));
                     if builtin_after_soma || has_non_builtin_system {
                         output::boot_section("system service");
                     }
@@ -1258,26 +1305,28 @@ pub async fn execute(
         // Non-builtin `system:` keys (memory / speech / …) are real robonix
         // packages — same start/init/register flow as primitive/service, just
         // resolved by name against `<robonix_source>/system/<key>/`. Builtin
-        // Rust binaries (atlas/executor/pilot) were spawned above and skipped
+        // Rust binaries were spawned above and skipped
         // here. A key whose package directory is missing on disk is warned
         // and skipped, not fatal — manifests can declare optional services
         // that aren't installed yet (e.g. liaison while it's being ported).
         // Best-effort boot: a failure on any non-system-builtin package is
         // recorded but does NOT bail the whole bring-up. Goal is to get
-        // atlas + executor + pilot + liaison up so `rbnx chat` can still
+        // atlas + executor + pilot + vitals + liaison up so `rbnx chat` can still
         // be poked at even when scene / memory / mapping is broken — the
         // alternative (the previous fail-fast model) means a single
         // package's milvus lock or sensor-init quirk gates every other
         // component the operator wants to test.
         //
-        // System builtins (atlas/executor/pilot/liaison) are still
+        // System builtins are still
         // bail-on-error: nothing else makes sense without those.
         let mut failures: Vec<(String, String, String)> = Vec::new(); // (component, name, err)
 
         if !skip_system {
-            let builtin_names: &[&str] = &["atlas", "executor", "pilot", "liaison", "soma"];
             for (key, value) in &deploy.system {
-                if builtin_names.contains(&key.as_str()) {
+                if BUILTIN_SYSTEM_BINARIES
+                    .iter()
+                    .any(|(name, _)| *name == key.as_str())
+                {
                     continue;
                 }
                 let pkg_dir = match config.robonix_source_path.as_ref() {
@@ -1637,7 +1686,11 @@ fn system_listen(name: &str, cfg: Option<&serde_yaml::Value>) -> Option<String> 
         .get(serde_yaml::Value::String("listen".into()))?
         .as_str()?;
     let trimmed = s.trim();
-    if trimmed.is_empty() || !matches!(name, "atlas" | "executor" | "pilot" | "liaison" | "soma") {
+    if trimmed.is_empty()
+        || !BUILTIN_SYSTEM_BINARIES
+            .iter()
+            .any(|(builtin, _)| *builtin == name)
+    {
         return None;
     }
     Some(trimmed.to_string())
@@ -1773,6 +1826,18 @@ fn system_cli_args(
             push_pair(&mut out, "--robot-yaml", s("robot_yaml"));
             push_pair(&mut out, "--deployment-manifest", s("deployment_manifest"));
             push_pair(&mut out, "--config", s("config"));
+            push_pair(&mut out, "--log", s("log"));
+        }
+        "vitals" => {
+            push_pair(&mut out, "--listen", s("listen"));
+            push_pair(
+                &mut out,
+                "--atlas",
+                s("atlas").or_else(|| atlas_listen.map(str::to_string)),
+            );
+            push_pair(&mut out, "--id", s("id"));
+            push_pair(&mut out, "--thresholds-path", s("thresholds_path"));
+            push_pair(&mut out, "--soma-endpoint", s("soma_endpoint"));
             push_pair(&mut out, "--log", s("log"));
         }
         _ => {}

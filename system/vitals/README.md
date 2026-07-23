@@ -2,7 +2,9 @@
 
 Monitors robot onboard health (CPU/GPU/NVMe temperature, voltage) and body (joint motors), evaluates thresholds, and reports via gRPC.
 
-Vitals consumes the unified health stream (`SomaHealthSnapshot`) from Soma (real or mock). Without Soma, Vitals exits with an error.
+Vitals consumes the unified health stream (`SomaHealthSnapshot`) from Soma
+(real or mock). If Soma is not ready yet, Vitals keeps serving and retries the
+stream connection in the background.
 
 ## Architecture
 
@@ -64,6 +66,30 @@ Mock SOMA replaces real SOMA, so they share the same port.
 
 For a screen-recording-friendly end-to-end health demo, see
 [`VITALS_HEALTH_DEMO.md`](VITALS_HEALTH_DEMO.md).
+
+### With `rbnx boot` (recommended)
+
+Declare Vitals in the deployment manifest's existing `system:` block:
+
+```yaml
+system:
+  vitals:
+    listen: 127.0.0.1:50092
+    log: info
+```
+
+`rbnx boot` starts `robonix-vitals`, supplies the Atlas endpoint from
+`system.atlas.listen`, and passes the complete Vitals block as manifest JSON.
+Fields without standalone CLI flags, including `expected_modules`, can be set
+in this block. Explicit CLI or environment values take precedence over the
+manifest, followed by an optional YAML config file and compiled defaults.
+
+```bash
+rbnx boot -f /path/to/deploy/robonix_manifest.yaml
+```
+
+The Webots example uses `127.0.0.1:50093` because port `50092` is reserved for
+voiceprint in that deployment.
 
 ### With real SOMA (production)
 
@@ -160,6 +186,7 @@ robonix-vitals --atlas 127.0.0.1:50051 \
 | `--mock-soma-piper-script` | `ROBONIX_VITALS_MOCK_SOMA_PIPER_SCRIPT` | `<crate>/scripts/piper_bridge.py` |
 | `--mock-soma-koch-script` | `ROBONIX_VITALS_MOCK_SOMA_KOCH_SCRIPT` | `<crate>/scripts/koch_bridge.py` |
 | `--config` | `ROBONIX_CONFIG_PATH` | — |
+| `--config-json` | - | `system.vitals` block supplied by `rbnx boot` |
 | `--log` | `RUST_LOG` | `robonix_vitals=info` |
 
 ## Threshold format
