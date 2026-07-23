@@ -253,15 +253,11 @@ async fn main() -> Result<()> {
     }
     {
         let health_atlas = atlas.clone();
-        let health_body_id = body.robot_id.clone();
+        let health_body = Arc::clone(&body);
         tokio::spawn(async move {
-            if let Err(error) = robonix_soma::health::start_health_collector(
-                health_atlas,
-                health_body_id,
-                "piper".to_string(),
-                snapshot_tx,
-            )
-            .await
+            if let Err(error) =
+                robonix_soma::health::start_health_collector(health_atlas, health_body, snapshot_tx)
+                    .await
             {
                 warn!("[soma] health collector failed: {error:#}");
             }

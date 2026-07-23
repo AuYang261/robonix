@@ -6,10 +6,10 @@ to other Robonix components over gRPC. `rbnx boot` reads the same
 Soma spawns them through `rbnx start` in two stages (see
 `docs/soma_two_stage_bringup.md`).
 
-Soma v2 does not render or interpret a self-description. Pilot calls
-`robonix/system/soma/get_yaml` to receive the original YAML string, and other
-services call `robonix/system/soma/get_urdf` to receive the corresponding URDF
-XML string.
+Soma preserves the self-description as raw YAML and URDF for consumers. It
+also interprets the existing `robot.components` tree when normalizing a
+`robonix/primitive/health/stream` frame into `SomaHealthSnapshot`; this keeps
+health component paths and kinds aligned with the robot description.
 
 ## Config
 
@@ -78,6 +78,14 @@ string robot_id  # empty = default robot
 string robot_id
 string urdf_xml
 ```
+
+`robonix/system/soma/get_health` and `robonix/system/soma/health` expose the
+latest normalized hardware state. Health primitive reading names use stable
+Soma paths such as `body/base/left_wheel`; optional controls append
+`/driver_temp`, `/enabled`, `/communication_ok`, `/online`, or `/error`.
+Top-level `HealthState` power fields are attached to the component whose
+`type` is `battery`. Soma retains the original six-joint Piper projection when
+a legacy Soma YAML has no component tree.
 
 An empty request `robot_id` selects `default_robot`. If no `default_robot` is
 configured and exactly one robot is loaded, Soma selects that only robot.
@@ -212,7 +220,7 @@ components:
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Component id, unique within this Soma YAML file. |
-| `type` | string | yes | Component type. Common values include `mobile_base`, `body_part`, `lidar_2d`, `rgb_camera`, `rgbd_camera`, and `audio_io`; custom values are allowed. |
+| `type` | string | yes | Component type. Common values include `mobile_base`, `wheel`, `battery`, `body_part`, `lidar_2d`, `rgb_camera`, `rgbd_camera`, and `audio_io`; custom values are allowed. |
 | `urdf_link` | string | no | URDF link represented by this component. |
 | `urdf_joint` | string | no | URDF joint represented by this component. |
 | `exports` | array | yes | Provider-grouped capabilities attached to this component. Use `[]` when none are attached. |

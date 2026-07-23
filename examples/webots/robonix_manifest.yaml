@@ -75,6 +75,17 @@ primitive:
       # example place holders
       update_rate: 10
       frame_id: lidar
+  # Deterministic simulated hardware telemetry consumed by Soma and Vitals.
+  # Keep scenario=normal for the current demo; the field is reserved as the
+  # stable entry point for future fault-injection profiles.
+  - name: tiago_health
+    path: ./primitives/tiago_health
+    config:
+      scenario: normal
+      interval_s: 0.5
+      battery_percent: 82.0
+      voltage: 24.8
+      remaining_s: 10800
   # ── audio mic/speaker source ─────────────────────────────────────────────
   # Local ALSA provider. It remains available for robot-local audio.
   - name: audio_driver

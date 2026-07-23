@@ -17,11 +17,23 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct SomaBody {
     pub robot_id: String,
+    pub display_name: String,
+    pub model_name: String,
+    pub root_link: String,
+    pub components: Vec<SomaComponent>,
     pub yaml_path: PathBuf,
     pub yaml_text: String,
     pub urdf_path: PathBuf,
     pub urdf_xml: String,
     pub footprint: Option<Footprint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SomaComponent {
+    pub id: String,
+    pub parent_id: String,
+    pub component_type: String,
+    pub frame_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -55,13 +67,34 @@ struct MinimalSomaDoc {
 #[derive(Debug, Deserialize)]
 struct MinimalUrdf {
     path: PathBuf,
+    #[serde(default)]
+    root_link: String,
+    #[serde(default)]
+    model_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct MinimalRobot {
     id: String,
     #[serde(default)]
+    display_name: String,
+    #[serde(default)]
     footprint: Option<FootprintDoc>,
+    #[serde(default)]
+    components: Vec<ComponentDoc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ComponentDoc {
+    id: String,
+    #[serde(rename = "type")]
+    component_type: String,
+    #[serde(default)]
+    urdf_link: String,
+    #[serde(default)]
+    urdf_joint: String,
+    #[serde(default)]
+    components: Vec<ComponentDoc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,8 +127,16 @@ impl SomaBody {
         let urdf_xml = std::fs::read_to_string(&urdf_path)
             .with_context(|| format!("read URDF '{}'", urdf_path.display()))?;
         let footprint = doc.robot.footprint.map(Footprint::from_doc).transpose()?;
+        let mut components = Vec::new();
+        flatten_components(&doc.robot.components, "body", &mut components)?;
+        let display_name = non_empty_or(&doc.robot.display_name, &doc.robot.id);
+        let model_name = non_empty_or(&doc.urdf.model_name, &doc.robot.id);
         Ok(Self {
             robot_id: doc.robot.id,
+            display_name,
+            model_name,
+            root_link: doc.urdf.root_link,
+            components,
             yaml_path: yaml_path.to_path_buf(),
             yaml_text,
             urdf_path,
@@ -121,6 +162,40 @@ impl SomaBody {
         self.footprint
             .as_ref()
             .ok_or_else(|| StoreError::MissingFootprint(self.robot_id.clone()))
+    }
+}
+
+/// Flatten the recursive Soma component tree into stable `body/...` paths.
+fn flatten_components(
+    docs: &[ComponentDoc],
+    parent_id: &str,
+    output: &mut Vec<SomaComponent>,
+) -> Result<()> {
+    for doc in docs {
+        if doc.id.trim().is_empty() {
+            bail!("robot.components[].id must not be empty");
+        }
+        if doc.component_type.trim().is_empty() {
+            bail!("robot component '{}' must define type", doc.id);
+        }
+        let id = format!("{parent_id}/{}", doc.id);
+        let frame_id = non_empty_or(&doc.urdf_link, &doc.urdf_joint);
+        output.push(SomaComponent {
+            id: id.clone(),
+            parent_id: parent_id.to_string(),
+            component_type: doc.component_type.clone(),
+            frame_id,
+        });
+        flatten_components(&doc.components, &id, output)?;
+    }
+    Ok(())
+}
+
+fn non_empty_or(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
     }
 }
 
@@ -185,6 +260,12 @@ mod tests {
             .join("examples/test_ci/soma.yaml")
     }
 
+    fn webots_yaml() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("examples/webots/soma.yaml")
+    }
+
     #[test]
     fn loads_raw_yaml_and_urdf() {
         let body = SomaBody::load(&fixture_yaml()).expect("load body");
@@ -209,5 +290,22 @@ mod tests {
         let body = SomaBody::load(&fixture_yaml()).expect("load body");
         let err = body.resolve("someone_else").expect_err("must not match");
         assert!(matches!(err, StoreError::NotFound(_)));
+    }
+
+    /// The recursive YAML tree becomes stable paths for health aggregation.
+    #[test]
+    fn loads_webots_health_topology() {
+        let body = SomaBody::load(&webots_yaml()).expect("load Webots body");
+        assert_eq!(body.robot_id, "tiago_webots");
+        assert_eq!(body.model_name, "tiago_webots");
+        assert_eq!(body.root_link, "base_link");
+        assert!(body.components.iter().any(|component| {
+            component.id == "body/base/left_wheel"
+                && component.parent_id == "body/base"
+                && component.component_type == "wheel"
+        }));
+        assert!(body.components.iter().any(|component| {
+            component.id == "body/base/battery" && component.component_type == "battery"
+        }));
     }
 }

@@ -15,6 +15,7 @@ examples/webots/
 │   ├── tiago_chassis/         /amcl_pose + /cmd_vel  → chassis/{state, move}
 │   ├── tiago_camera/          /head_front_camera/*   → camera/{snapshot, depth_snapshot}
 │   ├── tiago_lidar/           /scanner               → lidar/snapshot
+│   ├── tiago_health/          nominal simulated battery/wheel/sensor health
 │   └── audio_driver/          (separate, mic/spkr — old schema, not deployed yet)
 ├── services/
 │   └── tiago_nav2/            Nav2 launch + ActionClient wrapper
@@ -76,6 +77,45 @@ Then a third terminal for `rbnx chat`. `rbnx caps` lists the
 capabilities atlas knows about; `rbnx tools` lists the MCP tools
 the LLM agent can call.
 
+## Simulated hardware health
+
+`rbnx boot` starts `tiago_health` during Soma stage 1. The primitive publishes
+nominal battery, wheel, camera, lidar, and audio readings every 500 ms; Soma
+maps those readings onto the component tree in `soma.yaml`.
+
+Start Vitals in another terminal. Soma uses `50091` and voiceprint uses
+`50092` in this deployment, so Vitals uses `50093`:
+
+```bash
+cd /path/to/robonix
+
+cargo run -p robonix-vitals -- \
+  --atlas 127.0.0.1:50051 \
+  --listen 127.0.0.1:50093 \
+  --thresholds-path system/vitals/thresholds/example_thresholds.yaml \
+  --log robonix_vitals=info
+```
+
+Query the normalized result:
+
+```bash
+cd /path/to/robonix
+PROTO_DIR=$(ls -td target/debug/build/robonix-vitals-*/out | head -n1)
+
+grpcurl -plaintext \
+  -import-path "$PROTO_DIR" \
+  -proto robonix_contracts.proto \
+  -d '{}' \
+  127.0.0.1:50093 \
+  robonix.contracts.RobonixSystemVitalsGet/GetVitals | jq
+```
+
+Expected power values are approximately `82%` and `24.8 V`; both wheels are
+online with enabled torque and temperatures below the default thresholds.
+The primitive's manifest config includes `scenario: normal`. This is the
+reserved entry point for future fault profiles; unsupported values currently
+fail initialization instead of returning misleading healthy data.
+
 To tear everything down: Ctrl-C the `rbnx boot` terminal, OR from
 any other shell:
 
@@ -105,8 +145,8 @@ The deploy manifest references these via `${VLM_*}`.
 
 ## What `rbnx boot` does
 
-1. Reads `robonix_manifest.yaml`, brings up the `system:` block (atlas,
-   executor, pilot) using their installed binaries — args (listen
+1. Reads `robonix_manifest.yaml`, brings up the `system:` block and the
+   implicitly required Soma process using their installed binaries — args (listen
    address, log level, VLM endpoint) come straight out of the manifest.
 2. For each `primitive:` / `service:` entry, in declaration order:
    - Spawns the package via `rbnx start -p <path>` (which runs that
