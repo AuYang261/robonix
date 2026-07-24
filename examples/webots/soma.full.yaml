@@ -1,28 +1,24 @@
+# SPDX-License-Identifier: MulanPSL-2.0
+
 urdf:
-  path: ./sim/ros_ws/src/eaios_webots/resource/tiago_webots.urdf
+  path: ./sim/ros_ws/src/eaios_webots/resource/tiago_full_webots.urdf
   root_link: base_link
-  model_name: tiago_webots
+  model_name: tiago_webots_full
 
 robot:
-  id: tiago_webots
-  display_name: "Webots TIAGo Lite mobile robot"
-  family: mobile_robot
+  id: tiago_webots_full
+  display_name: "Webots TIAGo mobile manipulator"
+  family: mobile_manipulator
   root_part: base
-  # Webots R2025a TiagoBase uses a cylindrical bumper/base_cover collision
-  # with radius 0.272 m. Keep the Soma footprint tied to that simulator body
-  # model so nav2 does not overestimate the robot as a 0.70 m long rectangle.
-  dimensions: { length_m: 0.544, width_m: 0.544, height_m: 1.10 }
+  dimensions: { length_m: 0.68, width_m: 0.68, height_m: 1.10 }
   footprint:
     base_frame: base_link
-    # 2D collision hull in base_frame, CCW, first point not repeated.
-    # Consumers such as navigation must read this through Soma instead of
-    # hardcoding Tiago/Webots dimensions in their own package configs.
     points:
       - [0.272, 0.272]
       - [0.272, -0.272]
       - [-0.272, -0.272]
       - [-0.272, 0.272]
-  mass_kg: 55.0
+  mass_kg: 70.0
   passable_door_width_m: 0.80
   exports:
     - provider_id: tiago_health
@@ -36,12 +32,6 @@ robot:
         - { path: robonix/service/navigation/navigate/cancel, description: "Cancel the active navigation goal." }
     - provider_id: skill_explore_room
       capabilities:
-        # Capability paths must match what the explore_rbnx package
-        # actually exports in its package_manifest.yaml. The upstream
-        # skill exposes `explore` (start), `explore/status` (poll) and
-        # `explore/cancel` (abort) — there is no `explore/room`
-        # capability; the old name here was aspirational and produced
-        # "unknown capability" at soma load time.
         - { path: robonix/skill/explore/explore, description: "Run autonomous frontier exploration when the explore skill package is available." }
         - { path: robonix/skill/explore/explore/status, description: "Report the current frontier-exploration task status." }
         - { path: robonix/skill/explore/explore/cancel, description: "Cancel the active frontier-exploration task." }
@@ -67,6 +57,27 @@ robot:
         - id: battery
           type: battery
           exports: []
+    - id: arm
+      type: arm
+      urdf_link: arm_1_link
+      exports: []
+      components:
+        - { id: joint_1, type: joint, urdf_joint: arm_1_joint, exports: [] }
+        - { id: joint_2, type: joint, urdf_joint: arm_2_joint, exports: [] }
+        - { id: joint_3, type: joint, urdf_joint: arm_3_joint, exports: [] }
+        - { id: joint_4, type: joint, urdf_joint: arm_4_joint, exports: [] }
+        - { id: joint_5, type: joint, urdf_joint: arm_5_joint, exports: [] }
+        - { id: joint_6, type: joint, urdf_joint: arm_6_joint, exports: [] }
+        - { id: joint_7, type: joint, urdf_joint: arm_7_joint, exports: [] }
+        - id: gripper
+          type: gripper
+          urdf_link: wrist_ft_tool_link
+          exports: []
+          components:
+            - id: actuator
+              type: joint
+              urdf_joint: gripper_left_finger_joint
+              exports: []
     - id: head_camera
       type: rgbd_camera
       urdf_link: head_front_camera_rgb_optical_frame
@@ -96,17 +107,17 @@ robot:
             - { path: robonix/primitive/audio/select_device, description: "Select the active host ALSA audio device." }
 
 description:
-  summary: "A Webots TIAGo Lite deployment with chassis, RGB-D camera, planar lidar, simulated hardware health, audio IO, mapping, navigation, and optional exploration packages."
+  summary: "A Webots TIAGo mobile manipulator with a differential base, 7-axis arm, parallel gripper, RGB-D camera, planar lidar, health monitoring, audio IO, mapping, navigation, and optional exploration packages."
   can_do:
-    - "Drive in the simulated office world using velocity commands."
-    - "Navigate to 2D goals using the simple_nav service and Webots sensor data."
+    - "Drive and navigate in the simulated Webots worlds."
     - "Capture RGB images, registered depth images, and planar lidar scans."
-    - "Publish nominal simulated battery, wheel, and sensor health through Soma."
+    - "Render the full single-arm TIAGo body and expose arm and gripper joint state interfaces."
+    - "Publish nominal simulated base, arm, gripper, battery, and sensor health through Soma."
     - "Provide microphone and speaker audio through the host audio driver."
   cannot_do:
-    - "Manipulate objects; this Webots package does not deploy an arm or gripper primitive."
+    - "Command the arm or gripper through Robonix; this deployment does not yet include an arm primitive."
     - "Control physical TIAGo hardware."
     - "Use IMU or 3D point cloud data in the current deployment."
   notes:
-    - "Soma v2 serves this file and the referenced URDF as raw text; primitive and skill startup is driven by robonix_manifest.yaml."
-    - "The Webots simulation stack under sim/ must be started before packages that docker-exec into the simulator container."
+    - "This profile uses Cyberbotics Webots R2025a Tiago with its default parallel gripper."
+    - "The Webots simulation stack under sim/ must be started with --tiago-variant full before rbnx boot."

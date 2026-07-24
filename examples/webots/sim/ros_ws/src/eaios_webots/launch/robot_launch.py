@@ -34,11 +34,15 @@ def generate_launch_description():
         'resource', # Assuming URDF files are in the 'resource' folder
         robot_urdf_file
     ])
-    world_description_path = PathJoinSubstitution([
-        package_dir,
-        'worlds', # Assuming world files are in the 'worlds' folder
-        world_wbt_file
-    ])
+    generated_world = os.environ.get('ROBONIX_WEBOTS_WORLD_PATH')
+    if generated_world:
+        world_description_path = generated_world
+    else:
+        world_description_path = PathJoinSubstitution([
+            package_dir,
+            'worlds', # Assuming world files are in the 'worlds' folder
+            world_wbt_file
+        ])
 
     print(f"using robot_path:{robot_description_path}")
     print(f"using world_path:{world_description_path}")
@@ -138,4 +142,3 @@ def generate_launch_description():
             )
         )
     ])
-

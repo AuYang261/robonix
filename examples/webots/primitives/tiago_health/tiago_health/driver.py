@@ -18,6 +18,7 @@ import health_pb2  # noqa: E402
 @dataclass(frozen=True)
 class HealthSettings:
     scenario: str = "normal"
+    variant: str = "lite"
     interval_s: float = 0.5
     battery_percent: float = 82.0
     voltage: float = 24.8
@@ -31,6 +32,11 @@ class HealthSettings:
             raise ValueError(
                 f"unsupported scenario '{scenario}'; only 'normal' is implemented"
             )
+        variant = str(cfg.get("variant", "lite")).strip().lower() or "lite"
+        if variant not in {"lite", "full"}:
+            raise ValueError(
+                f"unsupported TIAGo variant '{variant}'; choose 'lite' or 'full'"
+            )
         interval_s = float(cfg.get("interval_s", 0.5))
         if interval_s <= 0:
             raise ValueError("interval_s must be greater than zero")
@@ -39,7 +45,14 @@ class HealthSettings:
             raise ValueError("battery_percent must be between 0 and 100")
         voltage = float(cfg.get("voltage", 24.8))
         remaining_s = int(cfg.get("remaining_s", 10800))
-        return cls(scenario, interval_s, battery_percent, voltage, remaining_s)
+        return cls(
+            scenario=scenario,
+            variant=variant,
+            interval_s=interval_s,
+            battery_percent=battery_percent,
+            voltage=voltage,
+            remaining_s=remaining_s,
+        )
 
 
 _settings = HealthSettings()
@@ -66,6 +79,47 @@ def _reading(
 
 def _control(name: str, value: float) -> "health_pb2.SensorReading":
     return _reading(name, current_a=value)
+
+
+def _full_variant_readings(settings: HealthSettings) -> list["health_pb2.SensorReading"]:
+    """Return nominal arm and gripper readings for the full Webots model."""
+    readings = [
+        _reading("body/arm", temp_c=37.0),
+        _control("body/arm/online", 1.0),
+        _control("body/arm/error", 0.0),
+    ]
+    for joint_index in range(1, 8):
+        component_id = f"body/arm/joint_{joint_index}"
+        readings.extend(
+            [
+                _reading(
+                    component_id,
+                    temp_c=38.0 + joint_index * 0.4,
+                    voltage=settings.voltage,
+                    current_a=0.35,
+                ),
+                _control(f"{component_id}/enabled", 1.0),
+                _control(f"{component_id}/communication_ok", 1.0),
+                _control(f"{component_id}/error", 0.0),
+            ]
+        )
+    readings.extend(
+        [
+            _reading("body/arm/gripper", temp_c=38.0),
+            _control("body/arm/gripper/online", 1.0),
+            _control("body/arm/gripper/error", 0.0),
+            _reading(
+                "body/arm/gripper/actuator",
+                temp_c=38.0,
+                voltage=settings.voltage,
+                current_a=0.2,
+            ),
+            _control("body/arm/gripper/actuator/enabled", 1.0),
+            _control("body/arm/gripper/actuator/communication_ok", 1.0),
+            _control("body/arm/gripper/actuator/error", 0.0),
+        ]
+    )
+    return readings
 
 
 def build_health_state(settings: HealthSettings) -> "health_pb2.HealthState":
@@ -111,8 +165,10 @@ def build_health_state(settings: HealthSettings) -> "health_pb2.HealthState":
         _reading("body/audio", temp_c=35.0),
         _control("body/audio/online", 1.0),
         _control("body/audio/error", 0.0),
-        _control("body/state", 0.0),
     ]
+    if settings.variant == "full":
+        readings.extend(_full_variant_readings(settings))
+    readings.append(_control("body/state", 0.0))
     return health_pb2.HealthState(
         voltage=settings.voltage,
         charging=False,
@@ -146,7 +202,8 @@ def init(cfg):
     _stop.clear()
     print(
         "[tiago_health] initialized "
-        f"scenario={_settings.scenario} interval_s={_settings.interval_s}",
+        f"scenario={_settings.scenario} variant={_settings.variant} "
+        f"interval_s={_settings.interval_s}",
         flush=True,
     )
     return Ok()
