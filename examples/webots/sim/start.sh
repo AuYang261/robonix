@@ -152,6 +152,47 @@ if [[ "${ROBONIX_FORCE_CPU:-0}" != "1" ]] && command -v nvidia-smi &>/dev/null &
   else
     echo "[sim/start] using user-specified GPU $ROBONIX_GPU_ID"
   fi
+
+  # NVIDIA packages install their Xorg modules in distro-specific locations.
+  # Resolve them before Compose evaluates compose.gpu.yaml; otherwise a short
+  # bind mount silently creates a directory when its source path is missing.
+  if [[ -z "${ROBONIX_NVIDIA_XORG_DRIVER:-}" ]]; then
+    for candidate in \
+      /usr/lib/x86_64-linux-gnu/nvidia/xorg/nvidia_drv.so \
+      /usr/lib64/nvidia/xorg/nvidia_drv.so \
+      /usr/lib/nvidia/xorg/nvidia_drv.so \
+      /usr/lib/xorg/modules/drivers/nvidia_drv.so; do
+      if [[ -f "$candidate" ]]; then
+        ROBONIX_NVIDIA_XORG_DRIVER=$(readlink -f "$candidate")
+        break
+      fi
+    done
+  fi
+
+  driver_version=$(nvidia-smi --id="$ROBONIX_GPU_ID" \
+    --query-gpu=driver_version --format=csv,noheader | tr -d '[:space:]')
+  if [[ -z "${ROBONIX_NVIDIA_GLX_SERVER:-}" ]]; then
+    driver_dir=$(dirname "${ROBONIX_NVIDIA_XORG_DRIVER:-/nonexistent}")
+    for candidate in \
+      "$driver_dir/libglxserver_nvidia.so" \
+      "$driver_dir/libglxserver_nvidia.so.$driver_version" \
+      /usr/lib/xorg/modules/extensions/libglxserver_nvidia.so; do
+      if [[ -f "$candidate" ]]; then
+        ROBONIX_NVIDIA_GLX_SERVER=$(readlink -f "$candidate")
+        break
+      fi
+    done
+  fi
+
+  if [[ ! -f "${ROBONIX_NVIDIA_XORG_DRIVER:-}" || ! -f "${ROBONIX_NVIDIA_GLX_SERVER:-}" ]]; then
+    echo "[sim/start] error: NVIDIA Xorg modules were not found on the host." >&2
+    echo "[sim/start] Install the NVIDIA Xorg/GL package matching driver $driver_version," >&2
+    echo "[sim/start] or set ROBONIX_NVIDIA_XORG_DRIVER and ROBONIX_NVIDIA_GLX_SERVER." >&2
+    exit 1
+  fi
+  export ROBONIX_NVIDIA_XORG_DRIVER ROBONIX_NVIDIA_GLX_SERVER
+  echo "[sim/start] NVIDIA Xorg driver: $ROBONIX_NVIDIA_XORG_DRIVER"
+  echo "[sim/start] NVIDIA GLX server: $ROBONIX_NVIDIA_GLX_SERVER"
 else
   echo "[sim/start] no GPU (or ROBONIX_FORCE_CPU=1) — CPU-only Webots"
 fi

@@ -19,8 +19,21 @@ services:
     volumes:
       # Some nvidia-container-toolkit/Docker combinations expose CUDA/NVML but
       # do not inject the Xorg NVIDIA modules needed by WEBOTS_HEADLESS_MODE=nvidia.
-      - /usr/lib/xorg/modules/drivers/nvidia_drv.so:/usr/lib/xorg/modules/drivers/nvidia_drv.so:ro
-      - /usr/lib/xorg/modules/extensions/libglxserver_nvidia.so:/usr/lib/xorg/modules/extensions/libglxserver_nvidia.so:ro
+      # start.sh discovers the distro-specific host paths and exports these
+      # variables. create_host_path=false is important: a missing source must
+      # fail clearly instead of becoming a directory that Xorg cannot load.
+      - type: bind
+        source: "${ROBONIX_NVIDIA_XORG_DRIVER:-/usr/lib/x86_64-linux-gnu/nvidia/xorg/nvidia_drv.so}"
+        target: /usr/lib/xorg/modules/drivers/nvidia_drv.so
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${ROBONIX_NVIDIA_GLX_SERVER:-/usr/lib/x86_64-linux-gnu/nvidia/xorg/libglxserver_nvidia.so}"
+        target: /usr/lib/xorg/modules/extensions/libglxserver_nvidia.so
+        read_only: true
+        bind:
+          create_host_path: false
     deploy:
       resources:
         reservations:
