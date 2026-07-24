@@ -73,6 +73,12 @@ const BUILTIN_SYSTEM_BINARIES: &[(&str, &str)] = &[
     ("liaison", "robonix-liaison"),
 ];
 
+pub(super) fn is_builtin_system(name: &str) -> bool {
+    BUILTIN_SYSTEM_BINARIES
+        .iter()
+        .any(|(builtin, _)| *builtin == name)
+}
+
 fn driver_init_timeout() -> Duration {
     std::env::var("ROBONIX_DRIVER_INIT_TIMEOUT_S")
         .ok()
@@ -175,6 +181,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Prerequisites build package-backed systems and skip installed binaries.
     fn boot_prerequisites_build_non_builtin_system_packages() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -186,6 +193,8 @@ mod tests {
         ));
         let scene = temp.join("system/scene");
         std::fs::create_dir_all(&scene).expect("scene package directory");
+        std::fs::create_dir_all(temp.join("system/vitals"))
+            .expect("builtin Vitals source directory");
         std::fs::write(
             scene.join("package_manifest.yaml"),
             r#"manifestVersion: 1
@@ -202,7 +211,10 @@ stop: "true"
         .expect("test package manifest");
 
         let deploy = DeployManifest {
-            system: HashMap::from([("scene".to_string(), serde_yaml::Value::Null)]),
+            system: HashMap::from([
+                ("scene".to_string(), serde_yaml::Value::Null),
+                ("vitals".to_string(), serde_yaml::Value::Null),
+            ]),
             ..Default::default()
         };
         let manifest_dir = temp.join("deployment");
@@ -354,10 +366,9 @@ fn check_prerequisites(
     // otherwise `rbnx start` performs the build after spawn and the provider
     // registration timeout can kill a legitimate first build (Scene model
     // downloads are a common example).
-    const SYSTEM_BUILTINS: &[&str] = &["atlas", "executor", "pilot", "liaison", "soma"];
     if let Some(source_root) = robonix_source_path {
         for name in deploy.system.keys() {
-            if SYSTEM_BUILTINS.contains(&name.as_str()) {
+            if is_builtin_system(name) {
                 continue;
             }
             let pkg_path = source_root.join("system").join(name);
@@ -1281,10 +1292,8 @@ pub async fn execute(
                         .skip_while(|(n, _)| *n != "soma")
                         .skip(1) // drop soma itself
                         .any(|(n, _)| deploy.system.contains_key(*n));
-                    let has_non_builtin_system = deploy
-                        .system
-                        .keys()
-                        .any(|k| !BUILTIN_SYSTEM_BINARIES.iter().any(|(n, _)| n == k));
+                    let has_non_builtin_system =
+                        deploy.system.keys().any(|name| !is_builtin_system(name));
                     if builtin_after_soma || has_non_builtin_system {
                         output::boot_section("system service");
                     }
@@ -1323,10 +1332,7 @@ pub async fn execute(
 
         if !skip_system {
             for (key, value) in &deploy.system {
-                if BUILTIN_SYSTEM_BINARIES
-                    .iter()
-                    .any(|(name, _)| *name == key.as_str())
-                {
+                if is_builtin_system(key) {
                     continue;
                 }
                 let pkg_dir = match config.robonix_source_path.as_ref() {
@@ -1686,11 +1692,7 @@ fn system_listen(name: &str, cfg: Option<&serde_yaml::Value>) -> Option<String> 
         .get(serde_yaml::Value::String("listen".into()))?
         .as_str()?;
     let trimmed = s.trim();
-    if trimmed.is_empty()
-        || !BUILTIN_SYSTEM_BINARIES
-            .iter()
-            .any(|(builtin, _)| *builtin == name)
-    {
+    if trimmed.is_empty() || !is_builtin_system(name) {
         return None;
     }
     Some(trimmed.to_string())
