@@ -11,6 +11,7 @@ use crate::pb::geometry_msgs::Point;
 use crate::pb::soma::{
     GetFootprintRequest, GetFootprintResponse, GetHealthRequest, GetHealthResponse, GetUrdfRequest,
     GetUrdfResponse, GetYamlRequest, GetYamlResponse, SomaHealthSnapshot, StreamHealthRequest,
+    UrdfAsset,
 };
 use crate::store::{SomaBody, StoreError};
 use std::sync::Arc;
@@ -80,9 +81,21 @@ impl RobonixSystemSomaGetUrdf for SomaService {
             .body
             .resolve(&req.robot_id)
             .map_err(Self::map_lookup_error)?;
+        let assets = if req.include_assets {
+            body.urdf_assets
+                .iter()
+                .map(|asset| UrdfAsset {
+                    path: asset.path.clone(),
+                    data: asset.data.clone(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(Response::new(GetUrdfResponse {
             robot_id: body.robot_id.clone(),
             urdf_xml: body.urdf_xml.clone(),
+            assets,
         }))
     }
 }
@@ -180,6 +193,13 @@ mod tests {
         Arc::new(SomaBody::load(&yaml_path).expect("load fixture body"))
     }
 
+    fn webots_body() -> Arc<SomaBody> {
+        let yaml_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("examples/webots/soma.yaml");
+        Arc::new(SomaBody::load(&yaml_path).expect("load Webots body"))
+    }
+
     #[tokio::test]
     async fn get_yaml_returns_raw_text() {
         let service = SomaService::new(fixture_body());
@@ -200,12 +220,31 @@ mod tests {
         let response = service
             .get_urdf(Request::new(GetUrdfRequest {
                 robot_id: "".into(),
+                include_assets: false,
             }))
             .await
             .expect("get urdf")
             .into_inner();
         assert_eq!(response.robot_id, "test_ci_robot");
         assert!(response.urdf_xml.contains("<robot name=\"test_ci_robot\">"));
+        assert!(response.assets.is_empty());
+    }
+
+    /// Asset bytes are optional so non-rendering consumers avoid the transfer.
+    #[tokio::test]
+    async fn get_urdf_includes_requested_visual_assets() {
+        let service = SomaService::new(webots_body());
+        let response = service
+            .get_urdf(Request::new(GetUrdfRequest {
+                robot_id: "tiago_webots".into(),
+                include_assets: true,
+            }))
+            .await
+            .expect("get URDF assets")
+            .into_inner();
+
+        assert_eq!(response.assets.len(), 19);
+        assert!(response.assets.iter().all(|asset| !asset.data.is_empty()));
     }
 
     #[tokio::test]
@@ -276,6 +315,7 @@ mod tests {
         let urdf = urdf_client
             .get_urdf(GetUrdfRequest {
                 robot_id: "test_ci_robot".into(),
+                include_assets: false,
             })
             .await
             .expect("get urdf")

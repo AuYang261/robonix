@@ -57,6 +57,7 @@ const GET_URDF_TOML: &str = "capabilities/system/soma/get_urdf.v1.toml";
 const GET_FOOTPRINT_TOML: &str = "capabilities/system/soma/footprint.v1.toml";
 const GET_HEALTH_TOML: &str = "capabilities/system/soma/get_health.v1.toml";
 const HEALTH_TOML: &str = "capabilities/system/soma/health.v1.toml";
+const MAX_URDF_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// Line rbnx writes to the stage-trigger pipe to release soma's
 /// stage 2. Match this exactly in rbnx's `cmd::deploy.rs` — they're
 /// a contract pair, not configurable per deployment.
@@ -129,7 +130,10 @@ async fn main() -> Result<()> {
     let mut body_server = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(RobonixSystemSomaGetYamlServer::from_arc(Arc::clone(&svc)))
-            .add_service(RobonixSystemSomaGetUrdfServer::from_arc(Arc::clone(&svc)))
+            .add_service(
+                RobonixSystemSomaGetUrdfServer::from_arc(Arc::clone(&svc))
+                    .max_encoding_message_size(MAX_URDF_RESPONSE_BYTES),
+            )
             .add_service(RobonixSystemSomaFootprintServer::from_arc(Arc::clone(&svc)))
             .add_service(RobonixSystemSomaGetHealthServer::from_arc(Arc::clone(&svc)))
             .add_service(RobonixSystemSomaHealthServer::from_arc(svc))

@@ -70,14 +70,20 @@ string robot_id
 string yaml_text
 ```
 
-`robonix/system/soma/get_urdf` returns the loaded raw URDF XML:
+`robonix/system/soma/get_urdf` returns the loaded raw URDF XML and, on request,
+the files referenced by URDF-local relative mesh or texture paths:
 
 ```srv
 string robot_id  # empty = default robot
+bool include_assets
 ---
 string robot_id
 string urdf_xml
+UrdfAsset[] assets
 ```
+
+Absolute browser URLs and `package://` references are not attached. Relative
+resources must resolve below the directory containing the URDF.
 
 `robonix/system/soma/get_health` and `robonix/system/soma/health` expose the
 latest normalized hardware state. Health primitive reading names use stable
@@ -152,7 +158,68 @@ description:
 | `root_link` | string | yes | Root link of this composite URDF. |
 | `model_name` | string | no | Human-readable or simulator-facing model name. |
 
-Soma preserves the original URDF XML. `get_urdf()` returns that raw XML text.
+Soma preserves the original URDF XML. `get_urdf()` returns that raw XML text
+and can include its URDF-local resources for clients that need to render the
+visual geometry.
+
+#### URDF resource path convention
+
+Robot descriptions intended for Soma and Vitals must use URDF-local relative
+paths for Mesh and texture resources. A recommended deployment layout is:
+
+```text
+robot-description/
+├── soma.yaml
+└── model/
+    ├── robot.urdf
+    ├── meshes/       # prepared locally; normally not tracked by Git
+    │   ├── stl/
+    │   └── dae/
+    └── textures/     # prepared locally; normally not tracked by Git
+```
+
+The `filename` value is resolved from the directory containing the URDF, not
+from the repository root, current working directory, or `soma.yaml` directory:
+
+```xml
+<mesh filename="meshes/stl/base_link.stl"/>
+<mesh filename="meshes/dae/arm/link_1.dae"/>
+<texture filename="textures/body.png"/>
+```
+
+For a portable Soma-to-Client rendering path, every resource reference must:
+
+- use `/` as the path separator;
+- be relative to the URDF directory and remain below that directory;
+- preserve enough of the upstream directory structure to avoid filename
+  collisions;
+- match the local filename exactly, including case;
+- point to a readable file before Soma starts.
+
+Parent traversal such as `../meshes/link.stl` and symlinks that resolve outside
+the URDF directory are rejected. Absolute filesystem paths and `package://`,
+`file://`, `http://`, `https://`, or `data:` references are not attached to the
+`get_urdf` response and therefore must not be used when the Client is expected
+to render only from Soma-provided resources.
+
+Large binary Mesh and texture files should be prepared locally instead of
+being committed to the Robonix repository. Each robot example that relies on
+external resources should keep these text files in Git:
+
+- the URDF containing the stable relative references;
+- a README with the official source repository, exact tag or commit, license,
+  and upstream-to-local path mapping;
+- a download or generation command;
+- a manifest of expected resource paths and checksums when available;
+- `.gitignore` entries covering the locally prepared binary directories.
+
+For example, if an official checkout contains
+`piper/meshes/dae/link1.dae`, an example may place it at
+`model/meshes/dae/link1.dae`; a URDF stored at `model/robot.urdf` must then use
+`filename="meshes/dae/link1.dae"`. Soma reads and validates the file at
+startup, attaches it to `get_urdf(include_assets=true)`, and the Client serves
+it through its same-origin URDF resource endpoint. The Client does not clone
+model repositories or repair incorrect URDF paths.
 
 ### Robot
 
