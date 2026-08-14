@@ -37,15 +37,18 @@ use robonix_soma::launcher::PackageLauncher;
 use robonix_soma::pb::contracts::{
     robonix_system_soma_footprint_server::RobonixSystemSomaFootprintServer,
     robonix_system_soma_get_health_server::RobonixSystemSomaGetHealthServer,
+    robonix_system_soma_get_urdf_asset_manifest_server::RobonixSystemSomaGetUrdfAssetManifestServer,
     robonix_system_soma_get_urdf_server::RobonixSystemSomaGetUrdfServer,
     robonix_system_soma_get_yaml_server::RobonixSystemSomaGetYamlServer,
     robonix_system_soma_health_server::RobonixSystemSomaHealthServer,
+    robonix_system_soma_stream_urdf_asset_server::RobonixSystemSomaStreamUrdfAssetServer,
 };
 use robonix_soma::service::SomaService;
 use robonix_soma::store::SomaBody;
 use robonix_soma::{
-    GET_FOOTPRINT_CONTRACT, GET_HEALTH_CONTRACT, GET_URDF_CONTRACT, GET_YAML_CONTRACT,
-    HEALTH_CONTRACT, SOMA_NAMESPACE,
+    GET_FOOTPRINT_CONTRACT, GET_HEALTH_CONTRACT, GET_URDF_ASSET_MANIFEST_CONTRACT,
+    GET_URDF_CONTRACT, GET_YAML_CONTRACT, HEALTH_CONTRACT, SOMA_NAMESPACE,
+    STREAM_URDF_ASSET_CONTRACT,
 };
 use std::os::fd::{FromRawFd, RawFd};
 use std::sync::Arc;
@@ -54,6 +57,9 @@ use tokio::signal::unix::{SignalKind, signal};
 
 const GET_YAML_TOML: &str = "capabilities/system/soma/get_yaml.v1.toml";
 const GET_URDF_TOML: &str = "capabilities/system/soma/get_urdf.v1.toml";
+const GET_URDF_ASSET_MANIFEST_TOML: &str =
+    "capabilities/system/soma/get_urdf_asset_manifest.v1.toml";
+const STREAM_URDF_ASSET_TOML: &str = "capabilities/system/soma/stream_urdf_asset.v1.toml";
 const GET_FOOTPRINT_TOML: &str = "capabilities/system/soma/footprint.v1.toml";
 const GET_HEALTH_TOML: &str = "capabilities/system/soma/get_health.v1.toml";
 const HEALTH_TOML: &str = "capabilities/system/soma/health.v1.toml";
@@ -132,6 +138,12 @@ async fn main() -> Result<()> {
                 RobonixSystemSomaGetUrdfServer::from_arc(Arc::clone(&server_service))
                     .max_encoding_message_size(MAX_URDF_RESPONSE_BYTES),
             )
+            .add_service(RobonixSystemSomaGetUrdfAssetManifestServer::from_arc(
+                Arc::clone(&server_service),
+            ))
+            .add_service(RobonixSystemSomaStreamUrdfAssetServer::from_arc(
+                Arc::clone(&server_service),
+            ))
             .add_service(RobonixSystemSomaFootprintServer::from_arc(Arc::clone(
                 &server_service,
             )))
@@ -208,6 +220,34 @@ async fn main() -> Result<()> {
         )
         .await
         .context("declare Soma get_urdf gRPC capability")?;
+    atlas
+        .declare_capability(
+            &config.provider_id,
+            GET_URDF_ASSET_MANIFEST_CONTRACT,
+            atlas_pb::Transport::Grpc,
+            &advertised,
+            atlas_client::grpc_params(
+                GET_URDF_ASSET_MANIFEST_TOML,
+                "robonix.contracts.RobonixSystemSomaGetUrdfAssetManifest",
+                "/robonix.contracts.RobonixSystemSomaGetUrdfAssetManifest/GetUrdfAssetManifest",
+            ),
+        )
+        .await
+        .context("declare Soma get_urdf_asset_manifest gRPC capability")?;
+    atlas
+        .declare_capability(
+            &config.provider_id,
+            STREAM_URDF_ASSET_CONTRACT,
+            atlas_pb::Transport::Grpc,
+            &advertised,
+            atlas_client::grpc_params(
+                STREAM_URDF_ASSET_TOML,
+                "robonix.contracts.RobonixSystemSomaStreamUrdfAsset",
+                "/robonix.contracts.RobonixSystemSomaStreamUrdfAsset/StreamUrdfAsset",
+            ),
+        )
+        .await
+        .context("declare Soma stream_urdf_asset gRPC capability")?;
     atlas
         .declare_capability(
             &config.provider_id,
