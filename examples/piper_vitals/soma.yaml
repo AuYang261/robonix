@@ -15,6 +15,10 @@ robot:
       capabilities:
         - { path: robonix/primitive/health/state, description: "Read the current Piper demonstration health state." }
         - { path: robonix/primitive/health/stream, description: "Stream Piper demonstration health into Soma." }
+    - provider_id: linux_health
+      capabilities:
+        - { path: robonix/primitive/health/state, description: "Read configured Linux host health." }
+        - { path: robonix/primitive/health/stream, description: "Stream configured Linux host health into Soma." }
   components:
     - id: arm
       display_name: "Piper arm"
@@ -63,16 +67,30 @@ robot:
               urdf_joint: gripper
               exports: []
 
+    - id: compute_node
+      display_name: "Linux compute node"
+      type: computer
+      exports: []
+      components:
+        - { id: cpu, display_name: "CPU", type: sensor, exports: [] }
+        - { id: input_power, display_name: "INA238 input power", type: sensor, exports: [] }
+        - { id: vdd_gpu, display_name: "VDD GPU", type: sensor, exports: [] }
+        - { id: vdd_cpu_soc_mss, display_name: "VDD CPU/SOC/MSS", type: sensor, exports: [] }
+        - { id: vin_sys_5v0, display_name: "VIN SYS 5V0", type: sensor, exports: [] }
+        - { id: battery, display_name: "Host battery", type: battery, exports: [] }
+
 description:
-  summary: "A static Piper and parallel-gripper body model with controllable demonstration health telemetry."
+  summary: "A static Piper body with mock actuator health and real Linux compute-node telemetry."
   can_do:
     - "Render the official Piper visual model in the Robonix Client Vitals page."
-    - "Show body, arm, joint, and gripper health through Soma and Vitals."
+    - "Show body, arm, joint, gripper, and compute-node health through Soma and Vitals."
+    - "Read configured CPU temperature and power channels from Linux sysfs."
     - "Inject and recover selected joint or gripper faults for demonstrations."
   cannot_do:
     - "Move or simulate the arm."
     - "Control physical Piper hardware."
-    - "Report real sensor values; the health primitive is a controllable demonstration source."
+    - "Report real Piper actuator values; Piper health remains a controllable demonstration source."
   notes:
+    - "Piper health is synthetic; Linux compute-node readings come from the deployment host."
     - "Executor and Pilot run so Vitals can monitor their software module health."
     - "Liaison and all other interaction, perception, audio, and simulation packages are intentionally absent."

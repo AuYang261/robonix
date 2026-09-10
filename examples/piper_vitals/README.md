@@ -14,6 +14,7 @@ The deployment starts these system components:
 - Pilot
 - Vitals
 - `piper_health`, a deterministic nominal-health primitive
+- `linux_health`, an external read-only primitive for configured host sysfs channels
 
 Executor and Pilot are included so Vitals can poll their module-health
 contracts. The Chat and Audio workspaces have no interaction backend in this
@@ -55,7 +56,8 @@ tracked robot model; stage them together with the URDF, manifest, source
 metadata, and license. See `system/soma/README.md` for the general resource
 path convention and `MODEL_SOURCE.md` for provenance.
 
-Load the VLM settings needed for Pilot, then build the one primitive:
+Load the VLM settings needed for Pilot, then build both health primitives.
+`rbnx build` keeps the external Linux package under this deployment's cache:
 
 ```bash
 source ~/.bashrc
@@ -100,8 +102,17 @@ ssh -N -T -o ExitOnForwardFailure=no -L 17860:127.0.0.1:7860 user@server
 
 Then open `http://127.0.0.1:17860/`.
 
-Expected hardware entries are the arm, six joints, parallel gripper, and its
-actuator. The software module list includes Vitals, Executor, and Pilot.
+Expected hardware entries are the arm, six joints, parallel gripper, its
+actuator, and the compute-node components declared in `soma.yaml`. Piper health
+is deterministic mock data. Compute-node readings are real values selected from
+the host's Linux sysfs by the `linux_health` instance config; unavailable host
+channels remain without a reading. The software module list includes Vitals,
+Executor, and Pilot.
+
+The Linux primitive owns no URDF or body model. This deployment composes it with
+the Piper model and maps kernel channels to stable Soma component ids. Adjust the
+`readings` selectors in `robonix_manifest.yaml` when another board exposes
+different driver or channel labels.
 
 ### Test hardware failure and recovery
 

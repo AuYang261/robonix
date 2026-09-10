@@ -23,6 +23,7 @@ system:
       api_format: openai
   vitals:
     listen: 127.0.0.1:50093
+    thresholds_path: ./thresholds.yaml
     log: info
 
 primitive:
@@ -33,3 +34,28 @@ primitive:
       interval_s: 0.5
       voltage: 24.0
       control_file: ../../.runtime/piper_health.json
+
+  - name: linux_health
+    url: https://github.com/AuYang261/primitive-linux-health-rbnx
+    branch: main
+    config:
+      interval_s: 1.0
+      readings:
+        - name: body/compute_node/cpu
+          temp_c: { metric: cpu_temperature, label: cpu-thermal }
+        - name: body/compute_node/input_power
+          voltage: { metric: voltage, driver: ina238, label: in1 }
+          current_a: { metric: current, driver: ina238, label: curr1 }
+        - name: body/compute_node/vdd_gpu
+          voltage: { metric: voltage, driver: ina3221, label: VDD_GPU }
+          current_a: { metric: current, driver: ina3221, label: VDD_GPU }
+        - name: body/compute_node/vdd_cpu_soc_mss
+          voltage: { metric: voltage, driver: ina3221, label: VDD_CPU_SOC_MSS }
+          current_a: { metric: current, driver: ina3221, label: VDD_CPU_SOC_MSS }
+        - name: body/compute_node/vin_sys_5v0
+          voltage: { metric: voltage, driver: ina3221, label: VIN_SYS_5V0 }
+          current_a: { metric: current, driver: ina3221, label: VIN_SYS_5V0 }
+        - name: body/compute_node/battery
+          voltage: { metric: voltage, supply_type: Battery }
+          current_a: { metric: current, supply_type: Battery }
+          battery_percent: { metric: battery_percent, supply_type: Battery }
