@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MulanPSL-2.0
 
+use crate::health_merge::{merge_primitive_snapshots, overlay_primitive_snapshot};
 use crate::pb::contracts::{
     robonix_system_soma_footprint_server::RobonixSystemSomaFootprint,
     robonix_system_soma_get_health_server::RobonixSystemSomaGetHealth,
@@ -15,6 +16,7 @@ use crate::pb::soma::{
 };
 use crate::runtime_state::RuntimeStateStore;
 use crate::store::{SomaBody, StoreError};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -31,13 +33,18 @@ pub struct SomaService {
     next_seq: AtomicU64,
 }
 
-/// Latest published snapshot plus the lease that keeps a health primitive's
-/// reading authoritative. While `primitive_valid_until` is in the future the
-/// ROS-derived fallback stays silent, so the two publishers cannot interleave.
+/// Latest published snapshot plus each health primitive's independently leased frame.
 #[derive(Debug, Default)]
 struct SnapshotState {
     latest: Option<SomaHealthSnapshot>,
-    primitive_valid_until: Option<Instant>,
+    runtime_snapshot: Option<SomaHealthSnapshot>,
+    primitive_snapshots: BTreeMap<String, PrimitiveSnapshotLease>,
+}
+
+#[derive(Debug)]
+struct PrimitiveSnapshotLease {
+    snapshot: SomaHealthSnapshot,
+    valid_until: Instant,
 }
 
 impl SomaService {
@@ -62,29 +69,64 @@ impl SomaService {
     pub async fn publish_runtime_snapshot(&self) {
         let mut snapshot = self.to_health_snapshot(0).await;
         let mut state = self.snapshot_state.write().await;
-        if state
-            .primitive_valid_until
-            .is_some_and(|deadline| deadline > Instant::now())
-        {
-            return;
+        state.runtime_snapshot = Some(snapshot.clone());
+        let now = Instant::now();
+        state
+            .primitive_snapshots
+            .retain(|_, source| source.valid_until > now);
+        if !state.primitive_snapshots.is_empty() {
+            let primitive = merge_primitive_snapshots(
+                &self.body.robot_id,
+                state
+                    .primitive_snapshots
+                    .values()
+                    .map(|source| &source.snapshot),
+            );
+            snapshot = overlay_primitive_snapshot(snapshot, primitive);
         }
         snapshot.seq = self.next_sequence();
+        snapshot.soma_ts_ns = unix_time_ns();
         state.latest = Some(snapshot.clone());
-        state.primitive_valid_until = None;
         drop(state);
         let _ = self.snapshot_tx.send(snapshot);
     }
 
-    /// Publish a health-primitive snapshot and suppress fallback until its TTL expires.
-    pub async fn publish_primitive_snapshot(&self, mut snapshot: SomaHealthSnapshot) {
+    /// Publish one source frame and merge all active health-primitive leases.
+    pub async fn publish_primitive_snapshot(
+        &self,
+        provider_id: &str,
+        snapshot: SomaHealthSnapshot,
+    ) {
         let ttl = Duration::from_millis(u64::from(snapshot.ttl_ms.max(1)));
-        snapshot.seq = self.next_sequence();
-        snapshot.soma_ts_ns = unix_time_ns();
         let mut state = self.snapshot_state.write().await;
-        state.latest = Some(snapshot.clone());
-        state.primitive_valid_until = Some(Instant::now() + ttl);
+        let now = Instant::now();
+        state
+            .primitive_snapshots
+            .retain(|_, source| source.valid_until > now);
+        state.primitive_snapshots.insert(
+            provider_id.to_string(),
+            PrimitiveSnapshotLease {
+                snapshot,
+                valid_until: now + ttl,
+            },
+        );
+        let primitive = merge_primitive_snapshots(
+            &self.body.robot_id,
+            state
+                .primitive_snapshots
+                .values()
+                .map(|source| &source.snapshot),
+        );
+        let mut merged = state
+            .runtime_snapshot
+            .clone()
+            .map(|runtime| overlay_primitive_snapshot(runtime, primitive.clone()))
+            .unwrap_or(primitive);
+        merged.seq = self.next_sequence();
+        merged.soma_ts_ns = unix_time_ns();
+        state.latest = Some(merged.clone());
         drop(state);
-        let _ = self.snapshot_tx.send(snapshot);
+        let _ = self.snapshot_tx.send(merged);
     }
 
     fn next_sequence(&self) -> u64 {
@@ -527,14 +569,16 @@ mod tests {
         assert!(body.detail.contains("no chassis odometry sample"));
     }
 
-    /// Primitive data suppresses fallback only for the advertised lease.
+    /// Primitive data overlays runtime facts only for the advertised lease.
     #[tokio::test]
-    async fn primitive_snapshot_wins_until_its_ttl_expires() {
+    async fn primitive_snapshot_overlays_runtime_until_its_ttl_expires() {
         let service = SomaService::new(fixture_body());
         let mut primitive = service.to_health_snapshot(0).await;
         primitive.ttl_ms = 20;
         primitive.components[0].detail = "primitive".into();
-        service.publish_primitive_snapshot(primitive).await;
+        service
+            .publish_primitive_snapshot("health_fixture", primitive)
+            .await;
         service.publish_runtime_snapshot().await;
 
         let active = service
@@ -544,7 +588,7 @@ mod tests {
             .into_inner()
             .snapshot
             .expect("primitive snapshot");
-        assert_eq!(active.seq, 1);
+        assert_eq!(active.seq, 2);
         assert_eq!(active.components[0].detail, "primitive");
 
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -556,8 +600,69 @@ mod tests {
             .into_inner()
             .snapshot
             .expect("fallback snapshot");
-        assert_eq!(fallback.seq, 2);
+        assert_eq!(fallback.seq, 3);
         assert_ne!(fallback.components[0].detail, "primitive");
+    }
+
+    /// Independent primitive sources remain present in one Soma snapshot.
+    #[tokio::test]
+    async fn active_primitive_snapshots_are_merged_by_provider() {
+        let service = SomaService::new(fixture_body());
+        let source = |id: &str, value: f64| SomaHealthSnapshot {
+            schema_version: 1,
+            body_id: "test_ci_robot".into(),
+            source_ts_ns: value as i64,
+            ttl_ms: 1_000,
+            components: vec![ComponentStatus {
+                id: id.into(),
+                parent_id: "body".into(),
+                kind: 9,
+                name: id.into(),
+                health: 0,
+                operational_state: 4,
+                present: true,
+                online: true,
+                ..Default::default()
+            }],
+            metrics: vec![Metric {
+                component_id: id.into(),
+                name: "temperature".into(),
+                value: Some(Scalar {
+                    value,
+                    unit: "degC".into(),
+                    quality: 0,
+                }),
+                source_key: id.into(),
+            }],
+            ..Default::default()
+        };
+        service
+            .publish_primitive_snapshot("robot_health", source("body/arm_sensor", 40.0))
+            .await;
+        service
+            .publish_primitive_snapshot("linux_health", source("body/compute_sensor", 50.0))
+            .await;
+
+        let snapshot = service
+            .get_health(Request::new(GetHealthRequest {}))
+            .await
+            .expect("get merged health")
+            .into_inner()
+            .snapshot
+            .expect("merged snapshot");
+        assert!(
+            snapshot
+                .components
+                .iter()
+                .any(|component| component.id == "body/arm_sensor")
+        );
+        assert!(
+            snapshot
+                .components
+                .iter()
+                .any(|component| component.id == "body/compute_sensor")
+        );
+        assert_eq!(snapshot.metrics.len(), 2);
     }
 
     #[tokio::test]

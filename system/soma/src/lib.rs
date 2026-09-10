@@ -3,6 +3,7 @@
 pub mod config;
 pub mod deployment;
 pub mod health;
+mod health_merge;
 pub mod launcher;
 pub mod pb;
 pub mod report;

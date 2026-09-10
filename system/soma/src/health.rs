@@ -153,7 +153,9 @@ async fn consume_primitive_stream(
             match result {
                 Ok(health_state) => {
                     let snapshot = health_state_to_snapshot(&health_state, &body, 0);
-                    service.publish_primitive_snapshot(snapshot).await;
+                    service
+                        .publish_primitive_snapshot(provider_id, snapshot)
+                        .await;
                 }
                 Err(error) => {
                     robonix_scribe::warn!(
@@ -198,23 +200,28 @@ fn health_state_to_snapshot(
         ),
         &readings,
     ));
-    components.extend(body.components.iter().map(|body_component| {
-        observed_component(
-            component(
-                &body_component.id,
-                &body_component.parent_id,
-                component_kind(&body_component.component_type),
-                body_component
-                    .id
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&body_component.id),
-                &body_component.frame_id,
-                &body_component.component_type,
-            ),
-            &readings,
-        )
-    }));
+    components.extend(
+        body.components
+            .iter()
+            .filter(|body_component| component_observed(&readings, &body_component.id))
+            .map(|body_component| {
+                observed_component(
+                    component(
+                        &body_component.id,
+                        &body_component.parent_id,
+                        component_kind(&body_component.component_type),
+                        body_component
+                            .id
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&body_component.id),
+                        &body_component.frame_id,
+                        &body_component.component_type,
+                    ),
+                    &readings,
+                )
+            }),
+    );
 
     let actuators: Vec<ActuatorState> = body
         .components
@@ -223,25 +230,30 @@ fn health_state_to_snapshot(
             matches!(
                 component_kind(&component.component_type),
                 KIND_JOINT | KIND_WHEEL
-            )
+            ) && component_observed(&readings, &component.id)
         })
         .map(|component| described_actuator_state(component, &readings))
         .collect();
     let power_sources: Vec<PowerSourceState> = body
         .components
         .iter()
-        .filter(|component| component_kind(&component.component_type) == KIND_BATTERY)
+        .filter(|component| {
+            component_kind(&component.component_type) == KIND_BATTERY
+                && (component_observed(&readings, &component.id)
+                    || state.voltage >= 0.0
+                    || state.remaining_s >= 0)
+        })
         .map(|component| described_power_source(component, state, &readings))
         .collect();
     let metrics = described_metrics(body, &readings);
     let faults = described_faults(body, &readings, now_ns);
 
-    if (safety_state != SAFETY_NORMAL || !faults.is_empty())
+    if (safety_state.is_some_and(|state| state != SAFETY_NORMAL) || !faults.is_empty())
         && let Some(root) = components.first_mut()
     {
         root.health = HEALTH_ERROR;
         root.operational_state = OP_FAULT;
-        root.detail = if safety_state == SAFETY_ESTOP {
+        root.detail = if safety_state == Some(SAFETY_ESTOP) {
             "emergency stop active".to_string()
         } else {
             "health fault active".to_string()
@@ -258,18 +270,22 @@ fn health_state_to_snapshot(
         components,
         actuators,
         power_sources,
-        safety: Some(SafetyState {
-            motion_allowed: safety_state == SAFETY_NORMAL,
-            motor_power_allowed: safety_state == SAFETY_NORMAL,
-            aggregate_state: safety_state,
+        safety: safety_state.map(|state| SafetyState {
+            motion_allowed: state == SAFETY_NORMAL,
+            motor_power_allowed: state == SAFETY_NORMAL,
+            aggregate_state: state,
             detail: String::new(),
         }),
-        safety_endpoints: vec![SafetyEndpointState {
-            name: "hardware_estop".to_string(),
-            r#type: ESTOP_TYPE_HARDWARE,
-            state: if safety_state == SAFETY_ESTOP { 1 } else { 0 },
-            detail: String::new(),
-        }],
+        safety_endpoints: safety_state
+            .map(|state| {
+                vec![SafetyEndpointState {
+                    name: "hardware_estop".to_string(),
+                    r#type: ESTOP_TYPE_HARDWARE,
+                    state: if state == SAFETY_ESTOP { 1 } else { 0 },
+                    detail: String::new(),
+                }]
+            })
+            .unwrap_or_default(),
         faults,
         metrics,
     }
@@ -468,16 +484,16 @@ fn described_faults(
 }
 
 /// Read the whole-body safety code from the root component.
-fn aggregate_safety_state(readings: &HashMap<&str, &crate::pb::health::SensorReading>) -> u32 {
-    let raw = readings
+fn aggregate_safety_state(
+    readings: &HashMap<&str, &crate::pb::health::SensorReading>,
+) -> Option<u32> {
+    readings
         .get("body/state")
-        .map(|reading| reading.current_a as u32)
-        .unwrap_or(0);
-    match raw {
-        0 => SAFETY_NORMAL,
-        2 => SAFETY_ESTOP,
-        _ => SAFETY_FAULT,
-    }
+        .map(|reading| match reading.current_a as u32 {
+            0 => SAFETY_NORMAL,
+            2 => SAFETY_ESTOP,
+            _ => SAFETY_FAULT,
+        })
 }
 
 /// Treat exact and suffixed readings as observations of the same component.
@@ -650,6 +666,34 @@ mod tests {
                 && component.kind == KIND_WHEEL
                 && component.health == HEALTH_OK
         }));
+    }
+
+    /// A provider frame contains only the body components that it observes.
+    #[test]
+    fn omits_components_owned_by_other_health_providers() {
+        let state = HealthState {
+            voltage: -1.0,
+            charging: false,
+            remaining_s: -1,
+            readings: vec![reading("body/head_camera", 42.0, -1.0, -1.0)],
+        };
+
+        let snapshot = health_state_to_snapshot(&state, &webots_body(), 1);
+        assert!(
+            snapshot
+                .components
+                .iter()
+                .any(|component| component.id == "body/head_camera")
+        );
+        assert!(
+            snapshot
+                .components
+                .iter()
+                .all(|component| component.id != "body/base/left_wheel")
+        );
+        assert!(snapshot.actuators.is_empty());
+        assert!(snapshot.safety.is_none());
+        assert!(snapshot.safety_endpoints.is_empty());
     }
 
     /// Existing suffix-only actuator producers remain valid with a component tree.

@@ -9,9 +9,11 @@ Soma spawns them through `rbnx start` in two stages (see
 Soma preserves the self-description as raw YAML and URDF for consumers. It
 also interprets the existing `robot.components` tree when normalizing a
 `robonix/primitive/health/stream` frame into `SomaHealthSnapshot`; this keeps
-health component paths and kinds aligned with the robot description. A fresh
-health-primitive frame takes precedence; if its TTL expires, Soma continues
-publishing the ROS runtime-state fallback.
+health component paths and kinds aligned with the robot description. Each
+health provider has an independent TTL lease and contributes only components
+observed in its frame. Soma merges active providers by stable component keys
+and overlays their facts on the ROS runtime-state fallback, so separate device
+health primitives can coexist without erasing one another.
 
 ## Config
 
